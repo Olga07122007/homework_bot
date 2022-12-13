@@ -1,36 +1,29 @@
+from http import HTTPStatus
 import logging
 import os
-import requests
 import sys
-import telegram
 import time
 
 from dotenv import load_dotenv
-from http import HTTPStatus
+import requests
+import telegram
 
-
-logging.basicConfig(
-    level=logging.DEBUG,
-    filename='main.log',
-    format='%(asctime)s, %(levelname)s, %(message)s',
-    filemode='a',
-)
-logger = logging.getLogger(__name__)
-logger.addHandler(
-    logging.StreamHandler(sys.stdout)
-)
+from exceptions import exceptions
 
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+RETRY_PERIOD = int(os.getenv('RETRY_PERIOD', 600))
 
-RETRY_PERIOD = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
+
 
 DAY = 86400
 
@@ -50,35 +43,53 @@ def check_tokens():
 def send_message(bot, message):
     """Сообщение в Телеграм."""
     try:
+        logger.debug('Начали отправку сообщения...')
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.debug('Сообщение отправлено!')
-    except Exception as error:
+    except telegram.error.TelegramError as error:
+        # если здесь не логгировать, то не проходят тесты
         logger.error(f'Ошибка при отправке сообщения: {error}')
+        raise exceptions.TelegramError(
+            f'Не удалось отправить сообщение: {error}'
+        )
+    except Exception as error:
+        raise exceptions.TelegramError(
+            f'Не удалось отправить сообщение: {error}'
+        )
 
 
 def get_api_answer(timestamp):
-    """Запрос на сервер Практикума."""
+    """Запрос на сервер."""
     payload = {'from_date': timestamp}
-
     try:
+        logger.debug(
+            'Запрос на сервер'
+            'https://practicum.yandex.ru/api/user_api/homework_statuses/'
+        )
         response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
         if response.status_code != HTTPStatus.OK:
-            raise Exception('Ошибка при запросе на сервер Практикума')
-
+            raise exceptions.ConnectionError(
+                f'Status_code ответа сервера = {response.status_code}'
+            )
+        logger.debug('Запрос прошел успешно!')
         return response.json()
     except requests.RequestException as error:
-        message = f'Код ответа сервера: {error}'
-        logger.error(message)
-        raise Exception(message)
+        msg = f'Код ответа Сервера (RequestException): {error}'
+        raise exceptions.ConnectionError(msg)
+    except ValueError as error:
+        msg = f'Код ответа сервера (ValueError): {error}'
+        raise exceptions.ConnectionError(msg)
 
 
 def check_response(response):
     """Проверяет ответ сервера на соответствие документации.
     Возвращает первый элемент из списка домашних работ.
     """
+    logger.debug('Проверка отвера от сервера...')
     if isinstance(response, dict):
         if 'homeworks' in response:
             if isinstance(response.get('homeworks'), list):
+                logger.debug('Ответ сервера соответствует ожидаемому.')
                 return response.get('homeworks')[0]
             raise TypeError('homeworks представлены не в виде списка')
         raise KeyError('В ответе сервера нет ключа homeworks')
@@ -108,13 +119,24 @@ def parse_status(homework):
 
 def main():
     """Основная логика работы бота."""
-    bot = telegram.Bot(token=TELEGRAM_TOKEN)
+    if not check_tokens():
+        logger.critical('Нет переменных окружения!')
+        logger.debug('Остановили бот!')
+        sys.exit(0)
+
+    try:
+        bot = telegram.Bot(token=TELEGRAM_TOKEN)
+    except Exception as error:
+        message = f'Не удалось создать бот: {error}'
+        logger.error(message)
+    # если не отнимать сутки, то возникает ошибка, т.к.
+    # список 'homeworks' оказывается пустым
     timestamp = int(time.time()) - DAY
     previous_status = ''
     logger.debug('Запустили бот!')
     send_error = True
 
-    while check_tokens():
+    while True:
         try:
             response = get_api_answer(timestamp)
             homework = check_response(response)
@@ -126,22 +148,52 @@ def main():
             else:
                 logger.debug('Статус работы не изменился!')
 
-        except Exception as error:
-            message = f'Ошибка при запуске бота: {error}'
+        except exceptions.TelegramError as error:
+            message = f'Ошибка при отправке сообщения: {error}'
+            logger.error(message)
+
+        except exceptions.ConnectionError as error:
+            message = f'Ошибка при запросе на сервер: {error}'
             logger.error(message)
             if send_error:
                 send_message(bot, message)
                 send_error = False
 
-        time.sleep(RETRY_PERIOD)
+        except KeyError as error:
+            message = f'Ошибка при обработке ответа сервера: {error}'
+            logger.error(message)
+            if send_error:
+                send_message(bot, message)
+                send_error = False
 
-    else:
-        logger.critical('Нет переменных окружения!')
-        logger.debug('Остановили бот!')
-        sys.exit(0)
+        except TypeError as error:
+            message = f'Ошибка при обработке ответа сервера: {error}'
+            logger.error(message)
+            if send_error:
+                send_message(bot, message)
+                send_error = False
+
+        finally:
+            time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.DEBUG,
+        filename='main.log',
+        format=(
+            '%(asctime)s, '
+            '%(levelname)s, '
+            'func:%(funcName)s,'
+            'line№%(lineno)d, '
+            '%(message)s'
+        ),
+        filemode='a',
+    )
+    logger.addHandler(
+        logging.StreamHandler(sys.stdout)
+    )
+
     try:
         main()
     except KeyboardInterrupt:
