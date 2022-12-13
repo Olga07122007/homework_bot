@@ -25,9 +25,6 @@ ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 
 
-DAY = 86400
-
-
 HOMEWORK_VERDICTS = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
     'reviewing': 'Работа взята на проверку ревьюером.',
@@ -63,7 +60,7 @@ def get_api_answer(timestamp):
     payload = {'from_date': timestamp}
     try:
         logger.debug(
-            'Запрос на сервер'
+            'Запрос на сервер '
             'https://practicum.yandex.ru/api/user_api/homework_statuses/'
         )
         response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
@@ -74,7 +71,9 @@ def get_api_answer(timestamp):
         logger.debug('Запрос прошел успешно!')
         return response.json()
     except requests.RequestException as error:
-        msg = f'Код ответа Сервера (RequestException): {error}'
+        msg = (
+            f'Код ответа Сервера (RequestException): {error}'
+        )
         raise exceptions.ConnectionError(msg)
     except ValueError as error:
         msg = f'Код ответа сервера (ValueError): {error}'
@@ -123,19 +122,15 @@ def main():
         logger.critical('Нет переменных окружения!')
         logger.debug('Остановили бот!')
         sys.exit(0)
-
     try:
         bot = telegram.Bot(token=TELEGRAM_TOKEN)
+        timestamp = int(time.time())
+        previous_status = ''
+        logger.debug('Запустили бот!')
+        send_error = True
     except Exception as error:
         message = f'Не удалось создать бот: {error}'
         logger.error(message)
-    # если не отнимать сутки, то возникает ошибка, т.к.
-    # список 'homeworks' оказывается пустым
-    timestamp = int(time.time()) - DAY
-    previous_status = ''
-    logger.debug('Запустили бот!')
-    send_error = True
-
     while True:
         try:
             response = get_api_answer(timestamp)
@@ -152,22 +147,8 @@ def main():
             message = f'Ошибка при отправке сообщения: {error}'
             logger.error(message)
 
-        except exceptions.ConnectionError as error:
-            message = f'Ошибка при запросе на сервер: {error}'
-            logger.error(message)
-            if send_error:
-                send_message(bot, message)
-                send_error = False
-
-        except KeyError as error:
-            message = f'Ошибка при обработке ответа сервера: {error}'
-            logger.error(message)
-            if send_error:
-                send_message(bot, message)
-                send_error = False
-
-        except TypeError as error:
-            message = f'Ошибка при обработке ответа сервера: {error}'
+        except Exception as error:
+            message = f'Ошибка: {error}'
             logger.error(message)
             if send_error:
                 send_message(bot, message)
