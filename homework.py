@@ -124,7 +124,7 @@ def main():
         sys.exit(0)
     try:
         bot = telegram.Bot(token=TELEGRAM_TOKEN)
-        timestamp = int(time.time())
+        timestamp = int(time.time()) - 86400 * 30
         previous_status = ''
         logger.debug('Запустили бот!')
         send_error = True
